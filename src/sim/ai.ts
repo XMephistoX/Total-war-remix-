@@ -11,7 +11,7 @@ export class BattleAI {
   private readonly holdUntil: number;
   private cavCycle = new Map<number, number>();
 
-  constructor(side: number, holdSeconds = 35) {
+  constructor(side: number, holdSeconds = 20) {
     this.side = side;
     this.holdUntil = holdSeconds;
   }
@@ -26,6 +26,12 @@ export class BattleAI {
     if (mine.length === 0) return;
 
     const myC = centroid(mine);
+    const myInf = mine.filter((u) => u.def.cls === 'infantry' || u.def.cls === 'spear');
+    const lineUnits = myInf.length > 0 ? myInf : mine;
+    const infC = centroid(lineUnits);
+    let homeDz = 0;
+    for (const u of lineUnits) homeDz += u.homeDz;
+    homeDz /= lineUnits.length;
     if (enemies.length === 0) {
       for (const u of mine) {
         if (u.def.mounted && routers.length > 0 && u.order.kind !== 'attack') {
@@ -45,16 +51,18 @@ export class BattleAI {
 
     let closest = 1e9;
     for (const u of mine) for (const e of enemies) closest = Math.min(closest, dist(u, e));
-    if (this.phase === 'hold' && (b.time > this.holdUntil || closest < 230)) this.phase = 'advance';
-    if (this.phase === 'advance' && closest < 75) this.phase = 'engage';
+    // The main battle line advances on the enemy as a whole; skirmishes between cavalry or
+    // missile troops elsewhere must not stop it (that left the AI standing still before).
+    const lineGap = Math.hypot(enC.x - infC.x, enC.z - infC.z);
+    if (this.phase === 'hold' && (b.time > this.holdUntil || closest < 200)) this.phase = 'advance';
+    if (this.phase === 'advance' && lineGap < 90) this.phase = 'engage';
 
-    // Where the battle line wants to be: walk toward the enemy, stop short of contact.
-    const lineAdvance = this.phase === 'hold' ? 0 : Math.max(0, Math.min(30, closest - 60));
-    const lineX = myC.x + fx * lineAdvance;
-    const lineZ = myC.z + fz * lineAdvance;
+    const lineAdvance = this.phase === 'hold' ? 0 : Math.max(0, Math.min(25, lineGap - 35));
+    const lineX = infC.x + fx * lineAdvance;
+    const lineZ = infC.z + fz * lineAdvance;
     const linePos = (u: Unit) => ({
-      x: lineX + rx * u.homeDx - fx * u.homeDz,
-      z: lineZ + rz * u.homeDx - fz * u.homeDz,
+      x: lineX + rx * u.homeDx - fx * (u.homeDz - homeDz),
+      z: lineZ + rz * u.homeDx - fz * (u.homeDz - homeDz),
     });
 
     for (const u of mine) {
@@ -88,10 +96,10 @@ export class BattleAI {
         const curValid = cur && cur.active;
         const chasing = cur && cur.routing;
         if (busy && curValid) continue;
-        if (this.phase === 'engage') {
+        if (this.phase !== 'hold') {
           const e = nearest(u, enemies);
           const d = dist(u, e);
-          if (d < 110 && (!curValid || (chasing && b.time - u.aiTargetTime > 6) || b.time - u.aiTargetTime > 8)) {
+          if (d < 130 && (!curValid || (chasing && b.time - u.aiTargetTime > 6) || b.time - u.aiTargetTime > 8)) {
             if (!curValid || cur!.id !== e.id) {
               b.orderAttack(u.id, e.id, d < 45);
               u.aiTargetTime = b.time;

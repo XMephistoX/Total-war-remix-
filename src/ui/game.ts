@@ -82,6 +82,10 @@ export class Game {
   private lastRight = { t: 0, x: 0, y: 0 };
   private raycaster = new THREE.Raycaster();
   private running = false;
+  private groups = new Map<number, number[]>();
+  private lastGroupKey = { n: -1, t: 0 };
+  private ghostBuf = new Float32Array(2 * 400);
+  private portraits = new Map<string, string>();
 
   constructor(canvas: HTMLCanvasElement) {
     this.canvas = canvas;
@@ -108,6 +112,8 @@ export class Game {
     this.ai[this.enemy] = new BattleAI(this.enemy, 40);
     this.ai[this.player] = this.autoPlayer ? new BattleAI(this.player, 5) : null;
     this.selected.clear();
+    this.groups.clear();
+    this.portraits.clear();
     this.focus = -1;
     this.hover = -1;
     this.paused = true;
@@ -249,7 +255,10 @@ export class Game {
         this.selected.add(id);
       }
       this.focus = id;
-      if (dbl) this.centerOn([u]);
+      if (dbl) {
+        // Double click: every unit of the same type.
+        for (const o of this.battle.units) if (o.side === this.player && o.active && o.def.id === u.def.id) this.selected.add(o.id);
+      }
     } else {
       if (touch && this.ownSelected().length > 0) this.attack(id, this.runMode || dbl);
       else this.focus = id;
@@ -322,8 +331,7 @@ export class Game {
     const out: PlanItem[] = [];
     for (const u of sel) {
       const seg = (usable * u.alive * u.def.spacing) / total;
-      const minFiles = Math.ceil(u.alive / 12);
-      const files = Math.max(minFiles, Math.min(u.alive, Math.round(seg / u.def.spacing)));
+      const files = this.battle.clampFiles(u, seg / u.def.spacing);
       const w = files * u.def.spacing;
       const d = Math.ceil(u.alive / files) * u.def.rankSpacing;
       const mid = cursor + seg / 2;
@@ -347,6 +355,25 @@ export class Game {
     for (const u of this.battle.units) if (u.side === this.player && u.active) this.selected.add(u.id);
     const first = [...this.selected][0];
     if (first !== undefined) this.focus = first;
+    this.hudTimer = 0;
+  }
+
+  /** Ctrl+N stores the selection as group N; N selects it; pressing N twice centers on it. */
+  private controlGroup(n: number, assign: boolean, t: number) {
+    if (assign) {
+      const ids = this.ownSelected().map((u) => u.id);
+      if (ids.length === 0) return;
+      this.groups.set(n, ids);
+      this.toast(`Group ${n} set (${ids.length} unit${ids.length > 1 ? 's' : ''})`, 'info', 2);
+      this.hudTimer = 0;
+      return;
+    }
+    const ids = (this.groups.get(n) ?? []).filter((id) => this.battle.units[id]?.active);
+    if (ids.length === 0) return;
+    this.selected = new Set(ids);
+    this.focus = ids[0];
+    if (this.lastGroupKey.n === n && t - this.lastGroupKey.t < 400) this.centerOn(ids.map((id) => this.battle.units[id]));
+    this.lastGroupKey = { n, t };
     this.hudTimer = 0;
   }
 
@@ -387,6 +414,12 @@ export class Game {
       if ((e.target as HTMLElement).tagName === 'INPUT') return;
       const k = e.key.toLowerCase();
       if (!this.battle) return;
+      const digit = /^Digit([1-9])$/.exec(e.code);
+      if (digit) {
+        e.preventDefault();
+        this.controlGroup(Number(digit[1]), e.ctrlKey || e.metaKey, e.timeStamp);
+        return;
+      }
       if (k === ' ') {
         e.preventDefault();
         this.togglePause();
@@ -444,7 +477,12 @@ export class Game {
     if (!this.battle) return;
     const p = this.ptrs.get(e.pointerId);
     if (!p) {
-      if (e.pointerType === 'mouse') this.hover = this.pickUnit(e.clientX, e.clientY);
+      if (e.pointerType === 'mouse') {
+        this.hover = this.pickUnit(e.clientX, e.clientY);
+        const hu = this.hover >= 0 ? this.battle.units[this.hover] : null;
+        const cur = hu && hu.side !== this.player && this.ownSelected().length > 0 ? 'crosshair' : hu ? 'pointer' : 'default';
+        if (this.canvas.style.cursor !== cur) this.canvas.style.cursor = cur;
+      }
       return;
     }
     const dx = e.clientX - p.x;
@@ -707,9 +745,9 @@ export class Game {
       el.className = `banner ${u.side === this.player ? 'own' : 'foe'}`;
       el.innerHTML = `<div class="flag" style="--fc:#${u.faction.primary.toString(16).padStart(6, '0')}">${ICONS[u.def.visual]}</div><div class="pip"></div>`;
       el.addEventListener('pointerdown', (e) => e.stopPropagation());
+      el.title = `${u.def.name} (${u.faction.name})`;
       el.addEventListener('click', (e) => {
-        const touch = (e as PointerEvent).pointerType ? (e as PointerEvent).pointerType !== 'mouse' : 'ontouchstart' in window;
-        this.clickUnit(u.id, e.shiftKey || e.ctrlKey, touch, false);
+        this.clickUnit(u.id, e.shiftKey || e.ctrlKey, false, e.detail >= 2);
       });
       el.addEventListener('contextmenu', (e) => {
         e.preventDefault();
@@ -755,12 +793,12 @@ export class Game {
       if (u.side !== this.player) continue;
       const el = document.createElement('div');
       el.className = 'card';
-      el.innerHTML = `<div class="ic">${ICONS[u.def.visual]}</div><div class="nm">${u.def.name}</div><div class="cnt"></div><div class="bar mor"><i></i></div><div class="bar en"><i></i></div><div class="st"></div>`;
-      let lastClick = 0;
+      const key = `${u.def.visual}|${u.faction.id}`;
+      if (!this.portraits.has(key)) this.portraits.set(key, this.view.portrait(u.def.visual, u.faction.id));
+      const img = this.portraits.get(key);
+      el.innerHTML = `<div class="pic">${img ? `<img src="${img}" alt="">` : ICONS[u.def.visual]}</div><div class="ic">${ICONS[u.def.visual]}</div><div class="grp"></div><div class="nm">${u.def.name}</div><div class="cnt"></div><div class="bar mor"><i></i></div><div class="bar en"><i></i></div><div class="st"></div>`;
       el.onclick = (e) => {
-        const now = performance.now();
-        const dbl = now - lastClick < 330;
-        lastClick = now;
+        const dbl = e.detail >= 2;
         if (!u.active) {
           this.focus = u.id;
           this.hudTimer = 0;
@@ -783,6 +821,9 @@ export class Game {
       (el.querySelector('.en i') as HTMLElement).style.width = `${u.energy}%`;
       const st = el.querySelector('.st') as HTMLElement;
       st.textContent = stateLabel(u);
+      let grp = '';
+      for (const [n, ids] of this.groups) if (ids.includes(id)) grp = String(n);
+      (el.querySelector('.grp') as HTMLElement).textContent = grp;
       el.className = `card st-${u.state}${this.selected.has(id) ? ' sel' : ''}${u.inMelee > 0 ? ' melee' : ''}`;
     }
     this.updateOrderButtons();
@@ -805,7 +846,7 @@ export class Game {
       u.routing ? 'Fleeing' : u.order.kind === 'attack' ? `Attacking ${this.battle.units[u.order.target]?.def.name ?? ''}` : u.order.kind === 'move' ? (u.running ? 'Running' : 'Marching') : u.inMelee > 0 ? 'Fighting' : u.def.missile && u.fireTarget >= 0 ? 'Shooting' : 'Holding';
     box.innerHTML = `
       <div class="ih ${own ? 'own' : 'foe'}"><span class="ic">${ICONS[d.visual]}</span><div><b>${d.name}</b><small>${u.faction.name}${own ? '' : ' (enemy)'}</small></div></div>
-      <div class="row"><span>Men</span><b>${u.alive} / ${u.startMen}</b><span>Kills</span><b>${u.kills}</b></div>
+      <div class="row"><span>Men</span><b>${u.alive} / ${u.startMen}</b><span>Kills</span><b>${u.kills}</b><span>Leadership</span><b>${d.morale}</b></div>
       <div class="stats"><span>Atk <b>${d.attack}</b></span><span>Chg <b>${d.charge}</b></span><span>Def <b>${d.defense}</b></span><span>Arm <b>${d.armor}</b></span><span>Shd <b>${d.shield}</b></span>${d.bonusVsCav ? `<span>vs Cav <b>+${d.bonusVsCav}</b></span>` : ''}${d.missile ? `<span>Ammo <b>${this.battle.ammoLeft(u)}</b></span>` : ''}</div>
       <div class="row"><span>${order}</span></div>
       <div class="row"><span>Stamina</span><b>${fat.name}</b><span>Morale</span><b class="m-${u.state}">${Math.round(u.morale)} ${moraleLabel(u)}</b></div>
@@ -870,6 +911,12 @@ export class Game {
   private drawOverlay() {
     const v = this.view;
     v.beginOverlay();
+    v.beginGhosts();
+    const buf = this.ghostBuf;
+    const ghostsFor = (u: Unit, x: number, z: number, fx: number, fz: number, files: number, r: number, g: number, bl: number) => {
+      const n = this.battle.formationPreview(u, x, z, fx, fz, files, buf);
+      for (let k = 0; k < n; k++) v.ghost(buf[k * 2], buf[k * 2 + 1], r, g, bl);
+    };
     for (const id of this.selected) {
       const u = this.battle.units[id];
       if (!u || u.alive === 0) continue;
@@ -878,6 +925,7 @@ export class Game {
         v.path(u.mx, u.mz, u.order.x, u.order.z, 'move');
         const files = Math.min(u.files, u.alive);
         v.rect(u.order.x, u.order.z, u.order.fx, u.order.fz, files * u.def.spacing, Math.ceil(u.alive / files) * u.def.rankSpacing, 'move');
+        if (this.plan.length === 0) ghostsFor(u, u.order.x, u.order.z, u.order.fx, u.order.fz, u.files, 0.55, 0.95, 0.45);
       } else if (u.order.kind === 'attack') {
         const t = this.battle.units[u.order.target];
         if (t && t.alive > 0) v.path(u.mx, u.mz, t.mx, t.mz, 'attack');
@@ -889,8 +937,13 @@ export class Game {
       if (!u || u.alive === 0 || this.selected.has(id)) continue;
       v.rect(u.mx, u.mz, u.fx, u.fz, u.width + 1, u.depth + 1, u.side === this.player ? 'own' : 'enemy');
     }
-    for (const p of this.plan) v.rect(p.x, p.z, p.fx, p.fz, p.w, p.d, 'plan');
+    for (const p of this.plan) {
+      v.rect(p.x, p.z, p.fx, p.fz, p.w, p.d, 'plan');
+      v.path(p.u.mx, p.u.mz, p.x, p.z, 'plan');
+      ghostsFor(p.u, p.x, p.z, p.fx, p.fz, p.files, 1, 1, 1);
+    }
     v.endOverlay();
+    v.endGhosts();
   }
 }
 

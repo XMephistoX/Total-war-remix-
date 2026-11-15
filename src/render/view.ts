@@ -28,6 +28,11 @@ export class BattleView {
   private linePool: THREE.Line[] = [];
   private linesUsed = 0;
   private time = 0;
+  private ghosts!: THREE.InstancedMesh;
+  private ghostCount = 0;
+  private readonly GHOST_MAX = 9000;
+  private visualGeo = new Map<string, THREE.BufferGeometry>();
+  private soldierMat!: THREE.Material;
 
   constructor(renderer: THREE.WebGLRenderer, battle: Battle) {
     this.battle = battle;
@@ -52,6 +57,14 @@ export class BattleView {
     this.scene.add(this.arrows);
 
     this.scene.add(this.overlay);
+    const gg = new THREE.CircleGeometry(0.42, 10).rotateX(-Math.PI / 2);
+    const gm = new THREE.MeshBasicMaterial({ color: 0xffffff, transparent: true, opacity: 0.75, depthWrite: false, depthTest: true });
+    this.ghosts = new THREE.InstancedMesh(gg, gm, this.GHOST_MAX);
+    this.ghosts.instanceColor = new THREE.InstancedBufferAttribute(new Float32Array(this.GHOST_MAX * 3), 3);
+    this.ghosts.count = 0;
+    this.ghosts.frustumCulled = false;
+    this.ghosts.renderOrder = 5;
+    this.scene.add(this.ghosts);
     for (const [k, c] of Object.entries({ sel: 0xffe27a, own: 0x9be37a, enemy: 0xff6a5a, plan: 0xffffff, move: 0x9be37a, attack: 0xff6a5a })) {
       this.lineMat[k] = new THREE.LineBasicMaterial({ color: c, transparent: true, opacity: k === 'plan' ? 0.85 : 0.75, depthTest: false });
     }
@@ -193,10 +206,12 @@ export class BattleView {
       groups.get(key)!.push(...u.all);
     }
     const mat = new THREE.MeshLambertMaterial({ vertexColors: true });
+    this.soldierMat = mat;
     for (const [key, list] of groups) {
       const [visual, fid] = key.split('|');
       const faction = b.units.find((u) => u.faction.id === fid)!.faction;
       const geo = buildSoldierGeometry(visual as Visual, faction);
+      this.visualGeo.set(key, geo);
       const mesh = new THREE.InstancedMesh(geo, mat, list.length);
       mesh.instanceMatrix.setUsage(THREE.DynamicDrawUsage);
       mesh.instanceColor = new THREE.InstancedBufferAttribute(new Float32Array(list.length * 3).fill(1), 3);
@@ -410,6 +425,80 @@ export class BattleView {
       pts.push(x, t.height(x, z) + 0.4, z);
     }
     this.line(pts, mat);
+  }
+
+  // ------------------------------------------------------------------ ghost markers (order preview)
+  beginGhosts() {
+    this.ghostCount = 0;
+  }
+
+  ghost(x: number, z: number, r: number, g: number, b: number) {
+    if (this.ghostCount >= this.GHOST_MAX) return;
+    const k = this.ghostCount++;
+    const e = this.ghosts.instanceMatrix.array as Float32Array;
+    const o = k * 16;
+    e.fill(0, o, o + 16);
+    e[o] = 1;
+    e[o + 5] = 1;
+    e[o + 10] = 1;
+    e[o + 12] = x;
+    e[o + 13] = this.battle.terrain.height(x, z) + 0.12;
+    e[o + 14] = z;
+    e[o + 15] = 1;
+    const c = this.ghosts.instanceColor!.array as Float32Array;
+    c[k * 3] = r;
+    c[k * 3 + 1] = g;
+    c[k * 3 + 2] = b;
+  }
+
+  endGhosts() {
+    this.ghosts.count = this.ghostCount;
+    this.ghosts.instanceMatrix.needsUpdate = true;
+    this.ghosts.instanceColor!.needsUpdate = true;
+  }
+
+  /** Small rendered picture of a unit's soldier model, for the unit cards. */
+  portrait(visual: string, factionId: string, size = 96): string {
+    const geo = this.visualGeo.get(`${visual}|${factionId}`);
+    if (!geo) return '';
+    const scene = new THREE.Scene();
+    scene.add(new THREE.HemisphereLight(0xffffff, 0x50402a, 1.6));
+    const sun = new THREE.DirectionalLight(0xfff1d6, 2.2);
+    sun.position.set(2, 4, 5);
+    scene.add(sun);
+    const mesh = new THREE.Mesh(geo, this.soldierMat);
+    mesh.rotation.y = -0.55;
+    scene.add(mesh);
+    geo.computeBoundingBox();
+    const bb = geo.boundingBox!;
+    const h = bb.max.y - bb.min.y;
+    const mounted = visual === 'cavalry' || visual === 'general';
+    const cam = new THREE.PerspectiveCamera(30, 1, 0.1, 50);
+    const focusY = bb.min.y + h * (mounted ? 0.62 : 0.6);
+    cam.position.set(0, focusY + 0.2, mounted ? 6.2 : 4.4);
+    cam.lookAt(0, focusY, 0);
+    const rt = new THREE.WebGLRenderTarget(size, size, { samples: 4 });
+    rt.texture.colorSpace = THREE.SRGBColorSpace;
+    const prevTarget = this.renderer.getRenderTarget();
+    const prevClear = new THREE.Color();
+    this.renderer.getClearColor(prevClear);
+    const prevAlpha = this.renderer.getClearAlpha();
+    this.renderer.setRenderTarget(rt);
+    this.renderer.setClearColor(0x000000, 0);
+    this.renderer.clear();
+    this.renderer.render(scene, cam);
+    const px = new Uint8Array(size * size * 4);
+    this.renderer.readRenderTargetPixels(rt, 0, 0, size, size, px);
+    this.renderer.setRenderTarget(prevTarget);
+    this.renderer.setClearColor(prevClear, prevAlpha);
+    rt.dispose();
+    const cv = document.createElement('canvas');
+    cv.width = cv.height = size;
+    const ctx = cv.getContext('2d')!;
+    const img = ctx.createImageData(size, size);
+    for (let y = 0; y < size; y++) img.data.set(px.subarray((size - 1 - y) * size * 4, (size - y) * size * 4), y * size * 4);
+    ctx.putImageData(img, 0, 0);
+    return cv.toDataURL();
   }
 
   render() {

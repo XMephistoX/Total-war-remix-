@@ -376,8 +376,7 @@ export class Battle {
     z = Math.max(-lim, Math.min(lim, z));
     u.order = { kind: 'move', x, z, fx: fx / l, fz: fz / l, files, target: -1, run };
     if (files > 0) {
-      const minFiles = Math.ceil(u.alive / 12);
-      u.files = Math.max(minFiles, Math.min(u.alive, Math.round(files)));
+      u.files = this.clampFiles(u, files);
       u.slotsDirty = true;
     }
     if (u.def.missile) u.fireTarget = -1;
@@ -536,6 +535,36 @@ export class Battle {
     // right = (-fz, fx), back = (-fx, -fz)
     out.x = u.cx - u.fz * lat - u.fx * back;
     out.z = u.cz + u.fx * lat - u.fz * back;
+  }
+
+  /**
+   * Where each soldier of a unit would stand in a hypothetical formation (used for the
+   * order preview). Writes x,z pairs into out and returns the count.
+   */
+  formationPreview(u: Unit, cx: number, cz: number, fx: number, fz: number, filesWanted: number, out: Float32Array): number {
+    const n = Math.max(1, u.alive);
+    const files = Math.max(1, Math.min(filesWanted > 0 ? filesWanted : u.files, n));
+    const ranks = Math.ceil(n / files);
+    let k = 0;
+    for (let s2 = 0; s2 < n && k * 2 + 1 < out.length; s2++) {
+      const file = s2 % files;
+      const rank = Math.floor(s2 / files);
+      const inRank = rank === ranks - 1 ? n - rank * files : files;
+      const lat = (file - (inRank - 1) / 2) * u.def.spacing;
+      const back = (rank - (ranks - 1) / 2) * u.def.rankSpacing;
+      out[k * 2] = cx - fz * lat - fx * back;
+      out[k * 2 + 1] = cz + fx * lat - fz * back;
+      k++;
+    }
+    return k;
+  }
+
+  /** Allowed formation width (files) for a unit: infantry at least 3 ranks deep, cavalry 2. */
+  clampFiles(u: Unit, files: number): number {
+    const minRanks = u.def.mounted ? 2 : u.def.missile ? 2 : 3;
+    const maxFiles = Math.max(1, Math.ceil(u.alive / minRanks));
+    const minFiles = Math.max(1, Math.ceil(u.alive / 12));
+    return Math.max(minFiles, Math.min(maxFiles, Math.round(files)));
   }
 
   private computeAggregates() {
@@ -821,7 +850,7 @@ export class Battle {
           if (f.side !== u.side || f === u || !f.active) continue;
           if (Math.hypot(f.mx - u.mx, f.mz - u.mz) < 70) this.addShock(f, 3);
         }
-      } else if (u.morale < 35) u.state = 'wavering';
+      } else if (u.morale < 32) u.state = 'wavering';
       else u.state = 'ok';
     }
   }
@@ -863,9 +892,11 @@ export class Battle {
       if (Math.abs(value) >= 1) mods.push({ label, value: Math.round(value) });
     };
     const lost = 1 - u.alive / u.startMen;
-    add('Casualties', -lost * 45);
+    // Gentle at first, steep late: an average unit holds until roughly 70% losses,
+    // low-leadership units break around 40%, elite units fight almost to the end.
+    add('Casualties', -Math.pow(lost, 1.4) * 75);
     const recent = u.recentLoss / u.startMen;
-    add('Heavy losses', -Math.min(24, recent * 160));
+    add('Heavy losses', -Math.min(16, recent * 120));
 
     // Flanking is judged from where the attacking units are relative to this unit's
     // facing (not individual soldiers, which get mixed up in a melee).
@@ -955,6 +986,13 @@ export class Battle {
     }
     if (theirs > 0 && mine < theirs * 0.5) add('Battle going badly', -8);
     else if (mine > theirs * 2) add('Winning', 6);
+    // A shattered army stops fighting: the last few units don't hold out forever.
+    if (mine < sd.startMen * 0.2) add('Army broken', -22);
+    let friendsNear = false;
+    for (const f of this.units) {
+      if (f !== u && f.side === u.side && f.active && Math.hypot(f.mx - u.mx, f.mz - u.mz) < 160) friendsNear = true;
+    }
+    if (!friendsNear && !u.routing) add('Alone', -10);
     if (u.def.discipline === 'disciplined' && !u.routing) add('Disciplined', 4);
     u.mods = mods;
   }
@@ -1044,7 +1082,7 @@ export class Battle {
             u.inMelee++;
             if (this.atkT[i] <= 0) {
               this.meleeAttack(i, t, d);
-              this.atkT[i] = (def.mounted ? 1.7 : 2.1) * (0.75 + 0.5 * this.rng.next());
+              this.atkT[i] = (def.mounted ? 2.0 : 2.4) * (0.75 + 0.5 * this.rng.next());
             }
           }
         } else {
@@ -1146,8 +1184,8 @@ export class Battle {
 
     this.anim[i] = Anim.Attack;
     this.animT[i] = 0;
-    // Even match ~5% per swing; every point of advantage multiplies the odds by 1.15.
-    const p = Math.max(0.008, Math.min(0.45, 0.05 * Math.pow(1.15, atk - def)));
+    // Even match ~3% per swing; every point of advantage multiplies the odds by 1.15.
+    const p = Math.max(0.005, Math.min(0.4, 0.028 * Math.pow(1.15, atk - def)));
     if (this.rng.next() < p) {
       this.damage(t, i);
     } else if (this.anim[t] !== Anim.Attack) {
@@ -1284,7 +1322,7 @@ export class Battle {
     const fromZ = -this.pVZ[c] / vl;
     const dot = Math.sin(this.yaw[s]) * fromX + Math.cos(this.yaw[s]) * fromZ;
     const shield = B.routing ? 0 : dot > 0.2 ? db.shield : dot > -0.3 ? db.shield * 0.5 : 0;
-    let p = 0.26 + 0.03 * (this.pDmg[c] - db.armor - shield);
+    let p = 0.18 + 0.025 * (this.pDmg[c] - db.armor - shield);
     if (db.mounted) p *= 0.85;
     p = Math.max(0.03, Math.min(0.75, p));
     B.missileHitT = this.time;
