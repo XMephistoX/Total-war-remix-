@@ -1,0 +1,101 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover" />
+    <title>Total War Remix: Battle Test</title>
+  </head>
+  <body>
+    <canvas id="c"></canvas>
+    <div id="banners"></div>
+    <div id="box" hidden></div>
+
+    <div id="topbar">
+      <div class="tb-left">
+        <div id="title">Battle test</div>
+        <div class="sub"><span id="clock">0:00</span> · <span id="tally"></span></div>
+      </div>
+      <div class="tb-right">
+        <button id="btnPause" class="primary">▶ Start battle</button>
+        <button id="btnSpeed" title="Game speed (+/-)">1×</button>
+        <button id="btnMenu" title="Menu">☰</button>
+      </div>
+    </div>
+    <div id="menu" class="panel" hidden>
+      <button id="mRestart">Restart this battle</button>
+      <button id="mNew">New battle…</button>
+      <button id="mAuto">AI commands my army: OFF</button>
+      <button id="mHelp">Controls</button>
+    </div>
+
+    <div id="toasts"></div>
+    <div id="info" class="panel" hidden></div>
+
+    <div id="bottom">
+      <div id="orders">
+        <button id="btnRun" title="Run (R)">🏃 Run</button>
+        <button id="btnHalt" title="Halt (H)">✋ Halt</button>
+        <button id="btnLine" title="Draw formation line (L)">〰 Line</button>
+        <button id="btnAll" title="Select all (Ctrl+A)">All</button>
+        <button id="btnCenter" title="Center camera (C)">◎</button>
+        <button id="btnFire" title="Fire at will" hidden>🏹 Fire at will</button>
+      </div>
+      <div id="cards"></div>
+    </div>
+
+    <div id="start" class="overlay">
+      <div class="dialog">
+        <h1>Total War Remix</h1>
+        <p class="tag">Battle test · 270 BC</p>
+        <div class="field">
+          <label>Command</label>
+          <div class="choices">
+            <button data-group="side" data-value="rome" class="on">Rome<small>disciplined legions</small></button>
+            <button data-group="side" data-value="gauls">Gauls<small>wild warbands, harder</small></button>
+          </div>
+        </div>
+        <div class="field">
+          <label>Unit size</label>
+          <div class="choices">
+            <button data-group="size" data-value="normal">Normal<small>~80 men</small></button>
+            <button data-group="size" data-value="large" class="on">Large<small>~160 men</small></button>
+            <button data-group="size" data-value="huge">Huge<small>~240 men</small></button>
+          </div>
+        </div>
+        <div class="field">
+          <label>Battlefield</label>
+          <div class="choices"><span id="seed" class="seed"></span><button id="reroll">New map</button></div>
+        </div>
+        <button id="go" class="big">To battle!</button>
+        <details>
+          <summary>How to play</summary>
+          <div class="help-body">
+            <p><b>Mouse:</b> left click selects, drag to box select, shift adds. Right click ground to move, right click an enemy to attack. Double right click to run. Right drag to draw a formation line (sets width and facing). WASD pans, Q/E rotates, wheel zooms, middle drag orbits.</p>
+            <p><b>Tactics:</b> hit units in the flank or rear, hold high ground, keep your general close, don't tire your men by running everywhere, and use spears against cavalry. Watch the morale list on a unit to see why it is wavering.</p>
+          </div>
+        </details>
+      </div>
+    </div>
+
+    <div id="help" class="overlay" hidden>
+      <div class="dialog">
+        <h2>Controls</h2>
+        <p><b>Mouse:</b> left click selects, drag to box select, shift adds. Right click ground to move, right click an enemy to attack. Double right click to run. Right drag draws a formation line. WASD pans, Q/E rotates, T/G tilts, wheel zooms, middle drag orbits. Space pauses, R toggles run, H halts, L line mode, C centers, Ctrl+A selects all, +/- speed.</p>
+        <button id="helpClose" class="big">Back</button>
+      </div>
+    </div>
+
+    <div id="end" class="overlay" hidden>
+      <div class="dialog">
+        <h1 id="endTitle"></h1>
+        <div id="endBody"></div>
+        <div class="choices">
+          <button id="endWatch">Keep watching</button>
+          <button id="endRestart">Replay map</button>
+          <button id="endNew" class="primary">New battle</button>
+        </div>
+      </div>
+    </div>
+    <script type="module" src="/src/main.ts"></script>
+  </body>
+</html>
