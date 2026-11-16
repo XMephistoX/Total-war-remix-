@@ -1,8 +1,7 @@
 // Headless Chrome check: load the built page, start a battle, take screenshots, report errors.
 import puppeteer from 'puppeteer-core';
-import { pathToFileURL } from 'node:url';
 const out = process.argv[2] ?? 'shots';
-const file = pathToFileURL(process.cwd() + '/dist/index.html').href;
+const file = process.env.GAME_URL ?? 'http://localhost:4173/';
 const browser = await puppeteer.launch({
   executablePath: '/usr/bin/google-chrome',
   args: ['--no-sandbox', '--use-gl=angle', '--use-angle=swiftshader', '--enable-unsafe-swiftshader', '--ignore-gpu-blocklist'],

@@ -10,6 +10,7 @@
 import { Rng } from './rng';
 import { Terrain } from './terrain';
 import { ARMIES, FACTIONS, UNITS, UNIT_SIZE_SCALE } from './data';
+import type { ArmySlot } from './data';
 import type { FactionDef, UnitDef, UnitSize } from './data';
 
 export const DT = 0.05;
@@ -122,9 +123,13 @@ export class Unit {
   fleeZ = 1;
   fireTarget = -1;
   fireAtWill = true;
+  /** Guard mode: hold formation, fight only what reaches the line, never chase. */
+  guard = false;
   kills = 0;
   slotsDirty = false;
   readonly isGeneral: boolean;
+  /** Index of this unit in the army it came from (campaign battles), or -1. */
+  src = -1;
   /** Offset in the army frame used by the AI to keep a battle line. */
   homeDx = 0;
   homeDz = 0;
@@ -184,11 +189,60 @@ export interface SideInfo {
   ai: boolean;
 }
 
+export interface ArmySpec {
+  faction: FactionDef;
+  units: { unit: string; men: number }[];
+}
+
 export interface BattleOptions {
   seed: number;
   size: UnitSize;
   factions: [string, string];
   aiSides: [boolean, boolean];
+  /** Explicit armies (campaign battles). Men are given at 'large' size and scaled. */
+  armies?: [ArmySpec, ArmySpec];
+  /** Look and relief of the battlefield: hills 0..2 (1 = default), dry 0..1. */
+  land?: { hills?: number; dry?: number };
+}
+
+/** Lays out an army in lines: skirmishers in front, infantry lines, cavalry on the wings, general behind. */
+export function autoDeploy(units: { unit: string; men: number }[], scale: number): (ArmySlot & { men: number; src: number })[] {
+  const out: (ArmySlot & { men: number; src: number })[] = [];
+  const items = units.map((u, src) => ({ ...u, src, def: UNITS[u.unit] })).filter((u) => u.def);
+  const width = (it: (typeof items)[number]) => Math.max(8, Math.ceil(Math.max(8, it.men * scale) / it.def.ranks) * it.def.spacing);
+  const row = (list: typeof items, dz: number, gap: number) => {
+    const total = list.reduce((a, it) => a + width(it), 0) + gap * Math.max(0, list.length - 1);
+    let x = -total / 2;
+    for (const it of list) {
+      const w = width(it);
+      out.push({ unit: it.unit, men: it.men, src: it.src, dx: x + w / 2, dz });
+      x += w + gap;
+    }
+    return total;
+  };
+  const inf = items.filter((it) => !it.def.mounted && it.def.cls !== 'missile');
+  const missiles = items.filter((it) => !it.def.mounted && it.def.cls === 'missile');
+  const cav = items.filter((it) => it.def.mounted && it.def.cls !== 'general');
+  const gens = items.filter((it) => it.def.cls === 'general');
+  const lines: (typeof items)[] = [];
+  for (const it of [...inf].sort((a, b) => (a.def.line ?? 1) - (b.def.line ?? 1) || a.def.cost - b.def.cost)) {
+    const want = Math.max(0, (it.def.line ?? 1) - 1);
+    let li = Math.min(want, lines.length);
+    while (lines[li] && lines[li].length >= 8) li++;
+    (lines[li] ??= []).push(it);
+  }
+  let front = 60;
+  lines.forEach((l, k) => {
+    front = Math.max(front, row(l, k * 30, 8));
+  });
+  if (missiles.length) row(missiles, -28, 14);
+  cav.forEach((it, k) => {
+    const sideSign = k % 2 === 0 ? -1 : 1;
+    const n = Math.floor(k / 2);
+    out.push({ unit: it.unit, men: it.men, src: it.src, dx: sideSign * (front / 2 + 30 + n * 45), dz: 6 + n * 10 });
+  });
+  gens.forEach((it, k) => out.push({ unit: it.unit, men: it.men, src: it.src, dx: (k - (gens.length - 1) / 2) * 40, dz: Math.max(60, lines.length * 30 + 20) }));
+  return out;
 }
 
 export class Battle {
@@ -246,7 +300,7 @@ export class Battle {
   pVZ = new Float32Array(this.PMAX);
   pPrevY = new Float32Array(this.PMAX);
   pDmg = new Float32Array(this.PMAX);
-  pKind = new Uint8Array(this.PMAX); // 0 arrow, 1 javelin
+  pKind = new Uint8Array(this.PMAX); // 0 arrow, 1 javelin, 2 stone
   pUnit = new Int32Array(this.PMAX);
   pCursor = 0;
   pCount = 0;
@@ -259,17 +313,18 @@ export class Battle {
   constructor(opts: BattleOptions) {
     this.opts = opts;
     this.rng = new Rng(opts.seed);
-    this.terrain = new Terrain(opts.seed);
+    this.terrain = new Terrain(opts.seed, 800, 2, opts.land?.hills ?? 1);
     this.setup();
   }
 
   // ------------------------------------------------------------------ setup
   private setup() {
     const scale = UNIT_SIZE_SCALE[this.opts.size];
-    const plans: { side: number; def: UnitDef; men: number; cx: number; cz: number; fx: number; fz: number; dx: number; dz: number }[] = [];
+    const plans: { side: number; def: UnitDef; men: number; cx: number; cz: number; fx: number; fz: number; dx: number; dz: number; src: number }[] = [];
     for (let side = 0; side < 2; side++) {
       const fid = this.opts.factions[side];
-      const army = ARMIES[fid];
+      const spec = this.opts.armies?.[side];
+      const army: (ArmySlot & { men?: number; src?: number })[] = spec ? autoDeploy(spec.units, scale) : ARMIES[fid];
       const fz = side === 0 ? -1 : 1;
       const fx = 0;
       const ccx = 0;
@@ -278,8 +333,8 @@ export class Battle {
       const rz = fx;
       for (const s of army) {
         const def = UNITS[s.unit];
-        const men = Math.max(def.mounted ? 8 : 12, Math.round(def.men * scale));
-        plans.push({ side, def, men, cx: ccx + rx * s.dx - fx * s.dz, cz: ccz + rz * s.dx - fz * s.dz, fx, fz, dx: s.dx, dz: s.dz });
+        const men = Math.max(def.mounted ? 6 : 10, Math.round((s.men ?? def.men) * scale));
+        plans.push({ side, def, men, cx: ccx + rx * s.dx - fx * s.dz, cz: ccz + rz * s.dx - fz * s.dz, fx, fz, dx: s.dx, dz: s.dz, src: s.src ?? -1 });
       }
     }
     this.N = plans.reduce((a, p) => a + p.men, 0);
@@ -315,7 +370,7 @@ export class Battle {
 
     for (let side = 0; side < 2; side++) {
       this.sides.push({
-        faction: FACTIONS[this.opts.factions[side]],
+        faction: this.opts.armies?.[side].faction ?? FACTIONS[this.opts.factions[side]],
         general: -1,
         generalSoldier: -1,
         generalAlive: true,
@@ -329,6 +384,7 @@ export class Battle {
       const u = new Unit(this.units.length, p.side, p.def, this.sides[p.side].faction, p.men, p.cx, p.cz, p.fx, p.fz);
       u.homeDx = p.dx;
       u.homeDz = p.dz;
+      u.src = p.src;
       this.units.push(u);
       this.sides[p.side].startMen += p.men;
       for (let k = 0; k < p.men; k++) {
@@ -669,12 +725,12 @@ export class Battle {
 
       if (u.state === 'routing') {
         const lostFrac = 1 - u.alive / u.startMen;
-        if (u.routCount >= 3 || lostFrac > 0.8) {
+        if (u.routCount >= 2 || lostFrac > 0.75) {
           u.state = 'shattered';
           this.emit(u, 'shattered', `${u.def.name} are shattered`);
-        } else if (u.routTime > 10 && u.morale >= 42 && best > 45) {
+        } else if (u.routTime > 20 && u.morale >= 50 && best > 80) {
           u.rallyTimer += dt;
-          if (u.rallyTimer > 5) {
+          if (u.rallyTimer > 8) {
             u.state = 'ok';
             u.rallied = true;
             u.rallyTimer = 0;
@@ -729,7 +785,14 @@ export class Battle {
             destZ = t.mz - faceZ * gap;
             wantMove = Math.hypot(destX - u.cx, destZ - u.cz) > 0.6;
             const closing = Math.hypot(t.mx - u.mx, t.mz - u.mz) < gap + 26;
-            if (t.routing) u.seekR = closing ? 16 : 3;
+            if (t.routing && u.guard) {
+              // Guarding units let routers go and hold where they are.
+              o.kind = 'none';
+              u.cx = u.mx;
+              u.cz = u.mz;
+              wantMove = false;
+            } else if (t.routing) u.seekR = closing ? 16 : 3;
+            else if (u.guard) u.seekR = closing || u.inMeleePrev > 0 ? 4 : 3;
             else u.seekR = closing || u.inMeleePrev > 0 ? 12 : 3;
           }
           o.x = t.mx;
@@ -759,7 +822,22 @@ export class Battle {
         }
       }
       if (o.kind === 'none') {
-        u.seekR = u.inMeleePrev > 0 ? 7 : 2.6;
+        u.seekR = u.inMeleePrev > 0 ? (u.guard ? 4 : 9) : 2.6;
+        // Off guard, idle units go for enemies that come close and run down routers.
+        if (!u.guard && !def.missile && u.inMeleePrev === 0 && (this.tick + u.id) % 10 === 0) {
+          let best: Unit | null = null;
+          let bd = 1e9;
+          for (const e of this.units) {
+            if (e.side === u.side || e.alive === 0 || e.gone) continue;
+            const d = Math.hypot(e.mx - u.mx, e.mz - u.mz) - (e.depth + u.depth) / 2;
+            const reach = e.routing ? 40 : 30;
+            if (d < reach && d < bd) {
+              bd = d;
+              best = e;
+            }
+          }
+          if (best) this.orderAttack(u.id, best.id, false);
+        }
         // Missile units fire at will at the closest enemy in range that isn't mixed up with friends.
         if (def.missile && u.fireAtWill && u.inMeleePrev === 0) {
           if (u.fireTarget >= 0) {
@@ -994,6 +1072,7 @@ export class Battle {
     }
     if (!friendsNear && !u.routing) add('Alone', -10);
     if (u.def.discipline === 'disciplined' && !u.routing) add('Disciplined', 4);
+    if (u.rallied && !u.routing) add('Rallied after fleeing', -8);
     u.mods = mods;
   }
 
@@ -1047,7 +1126,7 @@ export class Battle {
           }
         }
         let seek = u.seekR;
-        if (seek > 3 && !def.mounted) {
+        if (seek > 3 && !def.mounted && u.guard) {
           const files = u.fileCount;
           const sl = this.slot[i];
           const rank = Math.floor(sl / files);
@@ -1143,7 +1222,7 @@ export class Battle {
 
       // Animation state.
       const a = this.anim[i];
-      const busy = (a === Anim.Attack && this.animT[i] < 0.6) || (a === Anim.Block && this.animT[i] < 0.35) || (a === Anim.Shoot && this.animT[i] < 0.8);
+      const busy = (a === Anim.Attack && this.animT[i] < 1.0) || (a === Anim.Block && this.animT[i] < 0.35) || (a === Anim.Shoot && this.animT[i] < 1.0);
       if (!busy) {
         const sp = Math.hypot(this.vx[i], this.vz[i]);
         const na = u.routing ? Anim.Flee : sp < 0.25 ? Anim.Idle : sp < def.walk * 1.25 ? Anim.Walk : Anim.Run;
@@ -1240,7 +1319,7 @@ export class Battle {
     const tof = dist0 / m.speed + 0.15;
     tx += this.vx[s] * tof * 0.8;
     tz += this.vz[s] * tof * 0.8;
-    const sigma = (m.kind === 'arrow' ? 1.1 : 0.6) + dist0 * (m.kind === 'arrow' ? 0.03 : 0.035);
+    const sigma = (m.kind === 'javelin' ? 0.6 : 1.1) + dist0 * (m.kind === 'javelin' ? 0.035 : 0.03);
     tx += this.rng.gauss() * sigma;
     tz += this.rng.gauss() * sigma;
     const ty = this.terrain.height(tx, tz) + 1.0;
@@ -1261,7 +1340,7 @@ export class Battle {
         this.pVZ[c] = (tz - sz) / T;
         this.pVY[c] = (ty - sy + 0.5 * GRAVITY * T * T) / T;
         this.pDmg[c] = m.damage;
-        this.pKind[c] = m.kind === 'arrow' ? 0 : 1;
+        this.pKind[c] = m.kind === 'arrow' ? 0 : m.kind === 'javelin' ? 1 : 2;
         this.pUnit[c] = u.id;
         break;
       }
@@ -1457,6 +1536,17 @@ export class Battle {
     let a = 0;
     for (const i of u.all) if (this.dead[i] === 0) a += this.ammo[i];
     return a;
+  }
+
+  /** Survivors of one unit: men standing plus most of those who fled. */
+  survivors(u: Unit): number {
+    let alive = 0;
+    let fled = 0;
+    for (const i of u.all) {
+      if (this.dead[i] === 0) alive++;
+      else if (this.dead[i] === 2) fled++;
+    }
+    return alive + fled * 0.6;
   }
 
   sideStats(side: number) {

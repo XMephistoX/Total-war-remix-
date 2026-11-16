@@ -9,6 +9,7 @@
     "noImplicitReturns": true,
     "skipLibCheck": true,
     "isolatedModules": true,
+    "resolveJsonModule": true,
     "types": ["node", "vite/client"]
   },
   "include": ["src", "tools"]

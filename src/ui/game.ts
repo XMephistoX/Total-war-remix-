@@ -2,11 +2,17 @@
 
 import * as THREE from 'three';
 import { Battle, DT, fatigueLevel } from '../sim/battle';
+import type { ArmySpec } from '../sim/battle';
 import type { Unit } from '../sim/battle';
 import { BattleAI } from '../sim/ai';
 import { FACTIONS } from '../sim/data';
 import type { UnitSize } from '../sim/data';
 import { BattleView } from '../render/view';
+import { loadUnitAsset } from '../render/crowd';
+import { loadTrees } from '../render/trees';
+import type { TreeKind } from '../render/trees';
+import type { UnitAsset } from '../render/crowd';
+import { UNITS } from '../sim/data';
 import { RtsCamera } from './camera';
 import { ICONS } from './icons';
 
@@ -14,6 +20,14 @@ export interface GameSettings {
   seed: number;
   playerFaction: 'rome' | 'gauls';
   size: UnitSize;
+  /** Campaign battles: explicit armies (side 0 is the player), terrain and how the AI behaves. */
+  campaign?: {
+    armies: [ArmySpec, ArmySpec];
+    land: { hills: number; dry: number };
+    title: string;
+    aiHold: number;
+    onEnd: (b: Battle, withdrew: boolean) => void;
+  };
 }
 
 const $ = <T extends HTMLElement = HTMLElement>(id: string) => document.getElementById(id) as T;
@@ -98,18 +112,45 @@ export class Game {
   }
 
   // ------------------------------------------------------------------ lifecycle
-  start(settings: GameSettings) {
+  private assets = new Map<string, UnitAsset>();
+  private trees: TreeKind[] | null = null;
+
+  private startToken = 0;
+
+  async start(settings: GameSettings) {
+    const token = ++this.startToken;
     this.settings = settings;
+    // Load the 3D soldier models once.
+    const models = [...new Set(Object.values(UNITS).map((d) => d.model).filter((m): m is string => !!m))];
+    const missing = models.filter((m) => !this.assets.has(m));
+    const extra = settings.campaign ? settings.campaign.armies.flatMap((a) => a.units.map((u) => UNITS[u.unit]?.model)).filter((m): m is string => !!m && !this.assets.has(m) && !models.includes(m)) : [];
+    missing.push(...new Set(extra));
+    if (missing.length || !this.trees) {
+      $('loading').hidden = false;
+      const [loaded, trees] = await Promise.all([Promise.all(missing.map((m) => loadUnitAsset(m))), loadTrees()]);
+      missing.forEach((m, k) => {
+        const a = loaded[k];
+        if (a) this.assets.set(m, a);
+      });
+      this.trees = trees;
+      $('loading').hidden = true;
+    }
+    if (token !== this.startToken) return; // a newer start() took over
     if (this.view) this.view.dispose();
-    this.player = settings.playerFaction === 'rome' ? 0 : 1;
+    const camp = settings.campaign;
+    this.player = camp ? 0 : settings.playerFaction === 'rome' ? 0 : 1;
     this.enemy = 1 - this.player;
-    this.battle = new Battle({ seed: settings.seed, size: settings.size, factions: ['rome', 'gauls'], aiSides: [this.player !== 0, this.player !== 1] });
-    this.view = new BattleView(this.renderer, this.battle);
+    this.battle = new Battle({
+      seed: settings.seed, size: settings.size, factions: ['rome', 'gauls'], aiSides: [this.player !== 0, this.player !== 1],
+      armies: camp?.armies, land: camp?.land,
+    });
+    this.view = new BattleView(this.renderer, this.battle, this.assets, this.trees);
     this.cam = new RtsCamera(this.view.camera, this.battle.terrain);
     const dir = this.player === 0 ? 1 : -1;
     this.cam.jump(0, dir * 120, this.player === 0 ? 0 : Math.PI, 175, 0.55);
+    for (const u of this.battle.units) if (u.side === this.player) u.guard = true;
     this.ai = [null, null];
-    this.ai[this.enemy] = new BattleAI(this.enemy, 40);
+    this.ai[this.enemy] = new BattleAI(this.enemy, camp ? camp.aiHold : 25);
     this.ai[this.player] = this.autoPlayer ? new BattleAI(this.player, 5) : null;
     this.selected.clear();
     this.groups.clear();
@@ -128,7 +169,8 @@ export class Game {
     this.buildCards();
     $('end').hidden = true;
     $('toasts').innerHTML = '';
-    $('title').textContent = `${FACTIONS[settings.playerFaction].name} vs ${FACTIONS[settings.playerFaction === 'rome' ? 'gauls' : 'rome'].name}`;
+    $('title').textContent = camp ? camp.title : `${FACTIONS[settings.playerFaction].name} vs ${FACTIONS[settings.playerFaction === 'rome' ? 'gauls' : 'rome'].name}`;
+    this.campaignMode(!!camp);
     this.toast('Deploy your army, then press Start battle', 'info', 6);
     this.updateTopBar();
     this.updateOrderButtons();
@@ -147,10 +189,14 @@ export class Game {
     if (this.view) this.view.resize(w, h);
   }
 
+  /** True while another screen (the campaign map) owns the canvas. */
+  suspended = false;
+
   private frame(now: number) {
     requestAnimationFrame((t) => this.frame(t));
     const dtReal = Math.min(0.1, (now - this.lastT) / 1000);
     this.lastT = now;
+    if (this.suspended || !this.view) return;
     const b = this.battle;
     if (!this.paused) {
       this.acc += dtReal * this.speed;
@@ -250,11 +296,15 @@ export class Game {
       if (additive || this.multiMode) {
         if (this.selected.has(id)) this.selected.delete(id);
         else this.selected.add(id);
+      } else if (!dbl && this.selected.size === 1 && this.selected.has(id)) {
+        // Clicking the selected unit again deselects it.
+        this.clearSelection();
+        return;
       } else {
         this.selected.clear();
         this.selected.add(id);
       }
-      this.focus = id;
+      this.focus = this.selected.has(id) ? id : [...this.selected][0] ?? -1;
       if (dbl) {
         // Double click: every unit of the same type.
         for (const o of this.battle.units) if (o.side === this.player && o.active && o.def.id === u.def.id) this.selected.add(o.id);
@@ -263,6 +313,12 @@ export class Game {
       if (touch && this.ownSelected().length > 0) this.attack(id, this.runMode || dbl);
       else this.focus = id;
     }
+    this.hudTimer = 0;
+  }
+
+  private clearSelection() {
+    this.selected.clear();
+    this.focus = -1;
     this.hudTimer = 0;
   }
 
@@ -405,6 +461,7 @@ export class Game {
     c.addEventListener(
       'wheel',
       (e) => {
+        if (this.suspended) return;
         e.preventDefault();
         this.cam.zoom(Math.exp(e.deltaY * 0.0012));
       },
@@ -413,7 +470,7 @@ export class Game {
     window.addEventListener('keydown', (e) => {
       if ((e.target as HTMLElement).tagName === 'INPUT') return;
       const k = e.key.toLowerCase();
-      if (!this.battle) return;
+      if (!this.battle || this.suspended) return;
       const digit = /^Digit([1-9])$/.exec(e.code);
       if (digit) {
         e.preventDefault();
@@ -430,10 +487,9 @@ export class Game {
       else if (k === 'r') this.setRun(!this.runMode);
       else if (k === 'l') this.setLine(!this.lineMode);
       else if (k === 'c') this.centerOn(this.ownSelected());
-      else if (k === 'escape') {
-        this.selected.clear();
-        this.focus = -1;
-      } else if (k === '+' || k === '=') this.setSpeed(Math.min(4, this.speed * 2));
+      else if (k === 'escape') this.clearSelection();
+      else if (k === 'g') this.toggleGuard();
+      else if (k === '+' || k === '=') this.setSpeed(Math.min(4, this.speed * 2));
       else if (k === '-') this.setSpeed(Math.max(0.5, this.speed / 2));
       else this.cam.keys.add(k);
     });
@@ -442,7 +498,7 @@ export class Game {
   }
 
   private onDown(e: PointerEvent) {
-    if (!this.battle) return;
+    if (!this.battle || this.suspended) return;
     this.canvas.setPointerCapture(e.pointerId);
     const now = performance.now();
     this.ptrs.set(e.pointerId, { x: e.clientX, y: e.clientY, sx: e.clientX, sy: e.clientY, t: now, button: e.button, type: e.pointerType });
@@ -474,7 +530,7 @@ export class Game {
   }
 
   private onMove(e: PointerEvent) {
-    if (!this.battle) return;
+    if (!this.battle || this.suspended) return;
     const p = this.ptrs.get(e.pointerId);
     if (!p) {
       if (e.pointerType === 'mouse') {
@@ -575,10 +631,7 @@ export class Game {
         const dbl = now - this.lastTap.t < 330 && Math.hypot(p.x - this.lastTap.x, p.y - this.lastTap.y) < 20;
         this.lastTap = { t: now, x: p.x, y: p.y };
         if (id >= 0) this.clickUnit(id, e.shiftKey || e.ctrlKey, false, dbl);
-        else if (!e.shiftKey && !e.ctrlKey) {
-          this.selected.clear();
-          this.focus = -1;
-        }
+        else if (!e.shiftKey && !e.ctrlKey) this.clearSelection();
       }
     } else if (d.kind === 'line') {
       if (d.moved && this.plan.length > 0) this.commitPlan(this.runMode);
@@ -621,7 +674,10 @@ export class Game {
     const maxX = Math.max(x0, x1);
     const minY = Math.min(y0, y1);
     const maxY = Math.max(y0, y1);
-    if (!add) this.selected.clear();
+    if (!add) {
+      this.selected.clear();
+      this.focus = -1;
+    }
     const v = new THREE.Vector3();
     for (const u of this.battle.units) {
       if (u.side !== this.player || !u.active) continue;
@@ -645,6 +701,7 @@ export class Game {
     $('btnHalt').onclick = () => this.halt();
     $('btnLine').onclick = () => this.setLine(!this.lineMode);
     $('btnAll').onclick = () => this.selectAll();
+    $('btnGuard').onclick = () => this.toggleGuard();
     $('btnCenter').onclick = () => this.centerOn(this.ownSelected().length ? this.ownSelected() : this.battle.units.filter((u) => u.side === this.player && u.active));
     $('btnFire').onclick = () => {
       const sel = this.ownSelected().filter((u) => u.def.missile);
@@ -676,6 +733,11 @@ export class Game {
     };
     $('helpClose').onclick = () => ($('help').hidden = true);
     $('endWatch').onclick = () => ($('end').hidden = true);
+    $('endCampaign').onclick = () => this.finishCampaignBattle(false);
+    $('mWithdraw').onclick = () => {
+      $('menu').hidden = true;
+      if (confirm('Withdraw from the battle? Your army retreats and the battle counts as lost.')) this.finishCampaignBattle(true);
+    };
     $('endNew').onclick = () => {
       $('end').hidden = true;
       $('start').hidden = false;
@@ -694,6 +756,16 @@ export class Game {
       this.toast('The battle has begun!', 'info', 3);
     } else this.paused = !this.paused;
     this.updateTopBar();
+  }
+
+  private toggleGuard() {
+    const sel = this.ownSelected();
+    if (sel.length === 0) return;
+    const on = !sel.every((u) => u.guard);
+    for (const u of sel) u.guard = on;
+    this.toast(on ? 'Guard mode on: holding formation' : 'Guard mode off: free to engage and chase', 'info', 2.5);
+    this.updateOrderButtons();
+    this.hudTimer = 0;
   }
 
   private setSpeed(s: number) {
@@ -730,7 +802,10 @@ export class Game {
   private updateOrderButtons() {
     $('btnRun').classList.toggle('on', this.runMode);
     $('btnLine').classList.toggle('on', this.lineMode);
-    const missiles = this.battle ? this.ownSelected().filter((u) => u.def.missile) : [];
+    const own = this.battle ? this.ownSelected() : [];
+    $('btnGuard').classList.toggle('on', own.length > 0 && own.every((u) => u.guard));
+    ($('btnGuard') as HTMLButtonElement).disabled = own.length === 0;
+    const missiles = own.filter((u) => u.def.missile);
     const fire = $('btnFire');
     fire.hidden = missiles.length === 0;
     fire.classList.toggle('on', missiles.length > 0 && missiles.every((u) => u.fireAtWill));
@@ -743,7 +818,7 @@ export class Game {
     for (const u of this.battle.units) {
       const el = document.createElement('div');
       el.className = `banner ${u.side === this.player ? 'own' : 'foe'}`;
-      el.innerHTML = `<div class="flag" style="--fc:#${u.faction.primary.toString(16).padStart(6, '0')}">${ICONS[u.def.visual]}</div><div class="pip"></div>`;
+      el.innerHTML = `<div class="cloth" style="--fc:#${u.faction.primary.toString(16).padStart(6, '0')}">${ICONS[u.def.visual]}</div><div class="mbar"><i></i></div><div class="pole"></div>`;
       el.addEventListener('pointerdown', (e) => e.stopPropagation());
       el.title = `${u.def.name} (${u.faction.name})`;
       el.addEventListener('click', (e) => {
@@ -780,8 +855,15 @@ export class Game {
       const sy = r.top + ((1 - v.y) / 2) * r.height;
       const sc = Math.max(0.55, Math.min(1.1, 170 / dist));
       el.style.transform = `translate(${sx}px, ${sy}px) translate(-50%, -100%) scale(${sc.toFixed(3)})`;
-      const cls = `banner ${u.side === this.player ? 'own' : 'foe'} st-${u.state}${this.selected.has(u.id) ? ' sel' : ''}${this.focus === u.id ? ' focus' : ''}`;
+      const breaking = u.state === 'wavering' || (u.state === 'ok' && u.morale < 40);
+      const cls = `banner ${u.side === this.player ? 'own' : 'foe'} st-${u.state}${breaking ? ' breaking' : ''}${this.selected.has(u.id) ? ' sel' : ''}${this.focus === u.id ? ' focus' : ''}${this.hover === u.id ? ' hover' : ''}`;
       if (el.className !== cls) el.className = cls;
+      const bar = el.querySelector('.mbar i') as HTMLElement;
+      const w = `${Math.max(0, Math.min(100, u.morale)).toFixed(0)}%`;
+      if (bar.style.width !== w) {
+        bar.style.width = w;
+        bar.style.background = u.morale >= 50 ? '#8fd16a' : u.morale >= 32 ? '#e0b43c' : '#e0503f';
+      }
     }
   }
 
@@ -793,8 +875,8 @@ export class Game {
       if (u.side !== this.player) continue;
       const el = document.createElement('div');
       el.className = 'card';
-      const key = `${u.def.visual}|${u.faction.id}`;
-      if (!this.portraits.has(key)) this.portraits.set(key, this.view.portrait(u.def.visual, u.faction.id));
+      const key = `${u.def.model ?? u.def.visual}|${u.faction.id}`;
+      if (!this.portraits.has(key)) this.portraits.set(key, this.view.portrait(u));
       const img = this.portraits.get(key);
       el.innerHTML = `<div class="pic">${img ? `<img src="${img}" alt="">` : ICONS[u.def.visual]}</div><div class="ic">${ICONS[u.def.visual]}</div><div class="grp"></div><div class="nm">${u.def.name}</div><div class="cnt"></div><div class="bar mor"><i></i></div><div class="bar en"><i></i></div><div class="st"></div>`;
       el.onclick = (e) => {
@@ -848,9 +930,29 @@ export class Game {
       <div class="ih ${own ? 'own' : 'foe'}"><span class="ic">${ICONS[d.visual]}</span><div><b>${d.name}</b><small>${u.faction.name}${own ? '' : ' (enemy)'}</small></div></div>
       <div class="row"><span>Men</span><b>${u.alive} / ${u.startMen}</b><span>Kills</span><b>${u.kills}</b><span>Leadership</span><b>${d.morale}</b></div>
       <div class="stats"><span>Atk <b>${d.attack}</b></span><span>Chg <b>${d.charge}</b></span><span>Def <b>${d.defense}</b></span><span>Arm <b>${d.armor}</b></span><span>Shd <b>${d.shield}</b></span>${d.bonusVsCav ? `<span>vs Cav <b>+${d.bonusVsCav}</b></span>` : ''}${d.missile ? `<span>Ammo <b>${this.battle.ammoLeft(u)}</b></span>` : ''}</div>
-      <div class="row"><span>${order}</span></div>
+      <div class="row"><span>${order}</span>${own ? `<span class="tag ${u.guard ? 'on' : ''}">${u.guard ? 'Guard' : 'Free'}</span>` : ''}</div>
+      ${this.heightLine(u)}
       <div class="row"><span>Stamina</span><b>${fat.name}</b><span>Morale</span><b class="m-${u.state}">${Math.round(u.morale)} ${moraleLabel(u)}</b></div>
       <div class="mods">${mods.map((m) => `<div class="${m.value >= 0 ? 'pos' : 'neg'}"><span>${m.label}</span><b>${m.value > 0 ? '+' : ''}${m.value}</b></div>`).join('')}</div>`;
+  }
+
+  /** How this unit's ground compares with the nearest enemy unit. */
+  private heightLine(u: Unit): string {
+    let best: Unit | null = null;
+    let bd = 1e9;
+    for (const e of this.battle.units) {
+      if (e.side === u.side || !e.active) continue;
+      const d = Math.hypot(e.mx - u.mx, e.mz - u.mz);
+      if (d < bd) {
+        bd = d;
+        best = e;
+      }
+    }
+    if (!best) return '';
+    const dh = u.my - best.my;
+    const cls = dh > 2 ? 'pos' : dh < -2 ? 'neg' : '';
+    const what = dh > 2 ? 'Higher ground: +attack, +morale, +range' : dh < -2 ? 'Lower ground: enemy has the advantage' : 'Level ground';
+    return `<div class="row height ${cls}"><span>${Math.abs(dh).toFixed(0)} m ${dh >= 0 ? 'above' : 'below'} ${best.def.name}</span></div><div class="row height ${cls}"><span>${what}</span></div>`;
   }
 
   private processEvents() {
@@ -875,6 +977,29 @@ export class Game {
     while (host.children.length > 4) host.removeChild(host.firstChild!);
     setTimeout(() => el.classList.add('out'), secs * 1000);
     setTimeout(() => el.remove(), secs * 1000 + 600);
+  }
+
+  /** Shows or hides the controls that only make sense in custom battles. */
+  private campaignMode(on: boolean) {
+    for (const id of ['mRestart', 'mNew', 'endRestart', 'endNew']) $(id).hidden = on;
+    $('mWithdraw').hidden = !on;
+    $('endCampaign').hidden = !on;
+  }
+
+  private finishCampaignBattle(withdrew: boolean) {
+    const camp = this.settings.campaign;
+    if (!camp) return;
+    $('end').hidden = true;
+    this.paused = true;
+    camp.onEnd(this.battle, withdrew);
+  }
+
+  /** Hides the battle and its HUD while another screen uses the canvas. */
+  suspend(on: boolean) {
+    this.suspended = on;
+    for (const id of ['topbar', 'bottom', 'banners', 'toasts']) $(id).hidden = on;
+    for (const id of ['info', 'menu', 'end']) if (on) $(id).hidden = true;
+    if (!on) this.resize();
   }
 
   private showEnd() {
@@ -908,6 +1033,28 @@ export class Game {
     }
   }
 
+  /** Terrain-aware firing range: shooting downhill reaches further. */
+  private rangeRing(u: Unit) {
+    const m = u.def.missile!;
+    const t = this.battle.terrain;
+    const pts: number[] = [];
+    const n = 64;
+    for (let k = 0; k <= n; k++) {
+      const a = (k / n) * Math.PI * 2;
+      const dx = Math.sin(a);
+      const dz = Math.cos(a);
+      let r = m.range;
+      for (let it = 0; it < 3; it++) {
+        const h = t.height(u.mx + dx * r, u.mz + dz * r);
+        r = m.range * (1 + Math.max(-0.15, Math.min(0.3, (u.my - h) / 50)));
+      }
+      const x = u.mx + dx * r;
+      const z = u.mz + dz * r;
+      pts.push(x, t.height(x, z) + 0.6, z);
+    }
+    this.view.polyline(pts, 'range');
+  }
+
   private drawOverlay() {
     const v = this.view;
     v.beginOverlay();
@@ -930,6 +1077,10 @@ export class Game {
         const t = this.battle.units[u.order.target];
         if (t && t.alive > 0) v.path(u.mx, u.mz, t.mx, t.mz, 'attack');
       }
+    }
+    for (const id of this.selected) {
+      const u = this.battle.units[id];
+      if (u && u.def.missile && u.alive > 0) this.rangeRing(u);
     }
     for (const id of [this.focus, this.hover]) {
       if (id < 0) continue;

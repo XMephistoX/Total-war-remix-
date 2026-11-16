@@ -10,7 +10,10 @@ export class Terrain {
   readonly half: number;
   readonly hills: { x: number; z: number; r: number; h: number }[] = [];
 
-  constructor(seed: number, size = 800, cell = 2) {
+  readonly hilliness: number;
+
+  constructor(seed: number, size = 800, cell = 2, hilliness = 1) {
+    this.hilliness = hilliness;
     this.size = size;
     this.cell = cell;
     this.half = size / 2;
@@ -56,7 +59,7 @@ export class Terrain {
         x: rng.range(-260, 260),
         z: rng.range(-200, 200),
         r: rng.range(45, 110),
-        h: rng.range(7, 20),
+        h: rng.range(7, 20) * this.hilliness,
       });
     }
 
@@ -66,7 +69,7 @@ export class Terrain {
         const z = -this.half + j * this.cell;
         let y = 0;
         // Rolling ground.
-        y += noise(x / 160, z / 160) * 6;
+        y += noise(x / 160, z / 160) * 6 * Math.sqrt(this.hilliness);
         y += noise(x / 60 + 31, z / 60 + 17) * 1.6;
         y += noise(x / 18 + 71, z / 18 + 5) * 0.35;
         for (const hl of this.hills) {

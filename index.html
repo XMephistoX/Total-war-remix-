@@ -3,12 +3,14 @@
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover" />
-    <title>Total War Remix: Battle Test</title>
+    <title>Total War Remix</title>
+    <link rel="icon" href="data:," />
   </head>
   <body>
     <canvas id="c"></canvas>
     <div id="banners"></div>
     <div id="box" hidden></div>
+    <div id="loading" class="overlay" hidden><div class="dialog"><h2>Mustering the legions…</h2><p>Loading soldiers.</p></div></div>
 
     <div id="topbar">
       <div class="tb-left">
@@ -24,6 +26,7 @@
     <div id="menu" class="panel" hidden>
       <button id="mRestart">Restart this battle</button>
       <button id="mNew">New battle…</button>
+      <button id="mWithdraw" hidden>Withdraw from battle</button>
       <button id="mAuto">AI commands my army: OFF</button>
       <button id="mHelp">Controls</button>
     </div>
@@ -37,6 +40,7 @@
         <button id="btnHalt" title="Halt (H)">✋ Halt</button>
         <button id="btnLine" title="Draw formation line (L)">〰 Line</button>
         <button id="btnAll" title="Select all (Ctrl+A)">All</button>
+        <button id="btnGuard" title="Guard mode (G): hold formation, don't chase">🛡 Guard</button>
         <button id="btnCenter" title="Center camera (C)">◎</button>
         <button id="btnFire" title="Fire at will" hidden>🏹 Fire at will</button>
       </div>
@@ -46,7 +50,7 @@
     <div id="start" class="overlay">
       <div class="dialog">
         <h1>Total War Remix</h1>
-        <p class="tag">Battle test · 270 BC</p>
+        <p class="tag">270 BC · Rome, Carthage and the kingdoms of the Mediterranean</p>
         <div class="field">
           <label>Command</label>
           <div class="choices">
@@ -66,21 +70,57 @@
           <label>Battlefield</label>
           <div class="choices"><span id="seed" class="seed"></span><button id="reroll">New map</button></div>
         </div>
-        <button id="go" class="big">To battle!</button>
+        <div class="gobar"><button id="go" class="big">Custom battle</button><button id="goCampaign" class="big primary">Grand Campaign</button></div>
         <details>
           <summary>How to play</summary>
           <div class="help-body">
             <p><b>Mouse:</b> left click selects, drag to box select, shift adds. Right click ground to move, right click an enemy to attack. Double right click to run. Right drag to draw a formation line (sets width and facing); white markers show exactly where each soldier will stand. Double click selects all units of a type. Ctrl+1-9 saves a group, 1-9 recalls it. WASD pans, Q/E rotates, wheel zooms, middle drag orbits.</p>
-            <p><b>Tactics:</b> hit units in the flank or rear, hold high ground, keep your general close, don't tire your men by running everywhere, and use spears against cavalry. Watch the morale list on a unit to see why it is wavering.</p>
+            <p><b>Tactics:</b> hit units in the flank or rear, hold high ground, keep your general close, don't tire your men by running everywhere, and use spears against cavalry. Watch the morale list on a unit to see why it is wavering. A flag blinking white means that unit is close to breaking.</p>
           </div>
         </details>
+        <p class="credits">Soldier, horse and terrain art from <a href="https://play0ad.com" target="_blank" rel="noopener">0 A.D.</a> by Wildfire Games, <a href="https://creativecommons.org/licenses/by-sa/3.0/" target="_blank" rel="noopener">CC BY-SA 3.0</a>, converted for this game.</p>
       </div>
+    </div>
+
+    <div id="pick" class="overlay" hidden>
+      <div class="dialog wide">
+        <h1>Grand Campaign</h1>
+        <p class="tag">270 BC · choose your nation</p>
+        <div id="pickList" class="picklist"></div>
+        <div class="field">
+          <label>Battle unit size</label>
+          <div class="choices">
+            <button data-group="csize" data-value="normal">Normal</button>
+            <button data-group="csize" data-value="large" class="on">Large</button>
+            <button data-group="csize" data-value="huge">Huge</button>
+          </div>
+        </div>
+        <div class="choices"><button id="pickBack">Back</button><button id="pickContinue" class="primary" hidden>Continue saved campaign</button></div>
+      </div>
+    </div>
+
+    <div id="campaign" hidden>
+      <div id="cLabels"></div>
+      <div id="cTop">
+        <div id="cFaction"></div>
+        <div id="cMoney"></div>
+        <div id="cDate"></div>
+        <div class="sp"></div>
+        <button id="cPolitical" title="Political map (P)">🗺</button>
+        <button id="cNations">Nations</button>
+        <button id="cEnd" class="primary">End turn ⏎</button>
+        <button id="cMenu" title="Menu">☰</button>
+      </div>
+      <div id="cLog"></div>
+      <div id="cPanel" class="panel"></div>
+      <div id="cTip" hidden></div>
+      <div id="cDialog" class="overlay" hidden><div class="dialog"></div></div>
     </div>
 
     <div id="help" class="overlay" hidden>
       <div class="dialog">
         <h2>Controls</h2>
-        <p><b>Mouse:</b> left click selects, drag to box select, shift adds. Right click ground to move, right click an enemy to attack. Double right click to run. Right drag draws a formation line. WASD pans, Q/E rotates, T/G tilts, wheel zooms, middle drag orbits. Space pauses, R toggles run, H halts, L line mode, C centers, Ctrl+A selects all, +/- speed. Double click a unit to select every unit of that type. Ctrl+1-9 saves a group, 1-9 selects it, press twice to jump the camera there.</p>
+        <p><b>Mouse:</b> left click selects, drag to box select, shift adds. Right click ground to move, right click an enemy to attack. Double right click to run. Right drag draws a formation line. WASD pans, Q/E rotates, T/B or PageUp/PageDown tilt, wheel zooms, middle drag orbits. Space pauses, R toggles run, H halts, G guard mode, Esc or left click on empty ground deselects, L line mode, C centers, Ctrl+A selects all, +/- speed. Double click a unit to select every unit of that type. Ctrl+1-9 saves a group, 1-9 selects it, press twice to jump the camera there.</p>
         <button id="helpClose" class="big">Back</button>
       </div>
     </div>
@@ -93,6 +133,7 @@
           <button id="endWatch">Keep watching</button>
           <button id="endRestart">Replay map</button>
           <button id="endNew" class="primary">New battle</button>
+          <button id="endCampaign" class="primary" hidden>Return to campaign</button>
         </div>
       </div>
     </div>

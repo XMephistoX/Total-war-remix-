@@ -1,0 +1,14 @@
+import puppeteer from 'puppeteer-core';
+const units = process.argv[2] ?? 'rome_hastati';
+const out = process.argv[3] ?? 'shots/preview.png';
+const browser = await puppeteer.launch({ executablePath: '/usr/bin/google-chrome', args: ['--no-sandbox', '--use-gl=angle', '--use-angle=swiftshader', '--enable-unsafe-swiftshader'], defaultViewport: { width: 1400, height: 800 } });
+const page = await browser.newPage();
+const errors = [];
+page.on('pageerror', (e) => errors.push(e.message));
+page.on('console', (m) => { if (m.type() === 'error' || m.type() === 'warning') errors.push(m.text()); });
+await page.goto(`http://localhost:5199/tools/preview/preview.html?units=${units}`);
+await page.waitForFunction(() => window.__done, { timeout: 60000 });
+await new Promise((r) => setTimeout(r, 500));
+await page.screenshot({ path: out });
+console.log(errors.slice(0, 10).join('\n') || 'no errors');
+await browser.close();

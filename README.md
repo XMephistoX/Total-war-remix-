@@ -2,7 +2,7 @@
 
 A Rome: Total War inspired strategy game: real-time battles with thousands of soldiers, and later a turn-based campaign map with cities, economy and recruitment, starting in 270 BC.
 
-**Current phase: 1, battle test.** Placeholder soldiers, one battlefield, Rome vs Gauls.
+**Current phase: 1, battle test.** Animated 0 A.D. soldiers and cavalry, textured terrain, one battlefield, Rome vs Gauls.
 
 ## Run it
 
@@ -29,11 +29,14 @@ npm run sim -- 5   # 5 AI vs AI battles in Node, no graphics (balance + speed ch
 
 | Action | Input |
 | --- | --- |
-| Select | Left click a unit, its banner or its card. Drag to box select. Shift adds. Ctrl+A all. |
+| Select | Left click a unit, its flag or its card. Drag to box select. Shift adds. Ctrl+A all. Double click selects every unit of that type. |
+| Deselect | Left click empty ground, click the selected unit again, or Esc. |
+| Groups | Ctrl+1-9 saves the selection, 1-9 recalls it, press twice to move the camera there. |
+| Guard mode | G or the Guard button: hold formation and don't chase. Off: men spread out and chase nearby enemies. |
 | Move / attack | Right click ground / enemy. Double right click to run. R toggles run. |
 | Formation | Right drag on the ground draws the front line (width and facing). |
 | Halt | H |
-| Camera | WASD pan, Q/E rotate, T/G tilt, wheel zoom, middle drag orbit, C centers on selection |
+| Camera | WASD pan, Q/E rotate, T/B or PageUp/PageDown tilt, wheel zoom, middle drag orbit, C centers on selection |
 | Time | Space pause, +/- speed |
 
 ## Code layout
@@ -50,7 +53,17 @@ The simulation runs on a fixed 20 Hz tick with a seeded RNG, so a seed always re
 ## Roadmap
 
 1. **Battle test** (now): mechanics and feel with placeholder soldiers.
-2. **Real art**: free low-poly characters and animations (Quaternius CC0), animations baked to textures for thousands of soldiers, more unit types.
+2. **Real art** (in progress): 0 A.D. soldiers, horses and animations converted by `tools/assets/zeroad_units.py`, skinned on the GPU for thousands of soldiers. Next: trees, more unit types per faction.
 3. **Campaign map**: Mediterranean in 270 BC, provinces and settlements, buildings, taxes, trade, public order, recruitment by region, armies that trigger battles on the terrain where they meet.
 4. **Events and factions**: Roman houses and Senate, Marian reforms that swap the Roman roster, many factions.
 5. **Campaign AI**, sieges, sound and music, save/load.
+
+## Art credits and license
+
+Soldier, horse, animation and terrain art comes from [0 A.D.](https://play0ad.com) by Wildfire Games, licensed [CC BY-SA 3.0](https://creativecommons.org/licenses/by-sa/3.0/). The converted files in `public/units/` and `public/terrain/` are adaptations of that art and are shared under the same license. Commercial use is allowed as long as the credit stays and changes to the art stay under CC BY-SA.
+
+To regenerate the units, get the 0 A.D. art (`binaries/data/mods/public/art` from the 0 A.D. repository) and run:
+
+```bash
+python3 tools/assets/zeroad_units.py /path/to/0ad/binaries/data/mods/public/art [unit keys]
+```

@@ -1,9 +1,8 @@
 // Fast-forwards an AI vs AI battle inside the real page and screenshots key moments.
 import puppeteer from 'puppeteer-core';
-import { pathToFileURL } from 'node:url';
 const out = process.argv[2] ?? 'shots';
 const times = (process.argv[3] ?? '40,75,110,160').split(',').map(Number);
-const file = pathToFileURL(process.cwd() + '/dist/index.html').href;
+const file = process.env.GAME_URL ?? 'http://localhost:4173/';
 const browser = await puppeteer.launch({
   executablePath: '/usr/bin/google-chrome',
   args: ['--no-sandbox', '--use-gl=angle', '--use-angle=swiftshader', '--enable-unsafe-swiftshader', '--ignore-gpu-blocklist'],

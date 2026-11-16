@@ -1,6 +1,16 @@
 // RTS camera: orbits a target point on the ground.
 import * as THREE from 'three';
-import type { Terrain } from '../sim/terrain';
+
+export interface Ground {
+  height(x: number, z: number): number;
+}
+
+export interface CameraLimits {
+  x: number; // |tx| limit
+  z: number; // |tz| limit
+  minDist: number;
+  maxDist: number;
+}
 
 export class RtsCamera {
   tx = 0;
@@ -16,11 +26,13 @@ export class RtsCamera {
   private sdist = 150;
   readonly keys = new Set<string>();
   private readonly cam: THREE.PerspectiveCamera;
-  private readonly terrain: Terrain;
+  private readonly terrain: Ground;
+  readonly limits: CameraLimits;
 
-  constructor(cam: THREE.PerspectiveCamera, terrain: Terrain) {
+  constructor(cam: THREE.PerspectiveCamera, terrain: Ground, limits: CameraLimits = { x: 360, z: 360, minDist: 12, maxDist: 700 }) {
     this.cam = cam;
     this.terrain = terrain;
+    this.limits = limits;
   }
 
   jump(x: number, z: number, yaw: number, dist = 150, pitch = 0.62) {
@@ -47,7 +59,7 @@ export class RtsCamera {
   }
 
   zoom(factor: number) {
-    this.dist = Math.max(12, Math.min(700, this.dist * factor));
+    this.dist = Math.max(this.limits.minDist, Math.min(this.limits.maxDist, this.dist * factor));
   }
 
   rotate(dyaw: number, dpitch: number) {
@@ -56,9 +68,9 @@ export class RtsCamera {
   }
 
   private clamp() {
-    const lim = 360;
-    this.tx = Math.max(-lim, Math.min(lim, this.tx));
-    this.tz = Math.max(-lim, Math.min(lim, this.tz));
+    const l = this.limits;
+    this.tx = Math.max(-l.x, Math.min(l.x, this.tx));
+    this.tz = Math.max(-l.z, Math.min(l.z, this.tz));
   }
 
   update(dt: number) {
@@ -74,7 +86,7 @@ export class RtsCamera {
     if (k.has('q')) this.yaw += 1.4 * dt;
     if (k.has('e')) this.yaw -= 1.4 * dt;
     if (k.has('pageup') || k.has('t')) this.pitch = Math.min(1.45, this.pitch + 0.8 * dt);
-    if (k.has('pagedown') || k.has('g')) this.pitch = Math.max(0.12, this.pitch - 0.8 * dt);
+    if (k.has('pagedown') || k.has('b')) this.pitch = Math.max(0.12, this.pitch - 0.8 * dt);
     if (k.has('z')) this.zoom(1 - 1.2 * dt);
     if (k.has('x')) this.zoom(1 + 1.2 * dt);
     this.clamp();
