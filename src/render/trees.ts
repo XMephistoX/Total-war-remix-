@@ -1,6 +1,7 @@
 // Tree models converted from 0 A.D. (Wildfire Games, CC BY-SA 3.0) by tools/assets/zeroad_trees.py.
 
 import * as THREE from 'three';
+import { BIN_EXT } from './crowd';
 
 interface PartMeta {
   tex: string;
@@ -49,8 +50,8 @@ async function load(base: string): Promise<TreeKind[]> {
       if (!r.ok) throw new Error(`trees.json ${r.status}`);
       return r.json() as Promise<TreesMeta>;
     }),
-    fetch(`${base}trees.bin`).then((r) => {
-      if (!r.ok) throw new Error(`trees.bin ${r.status}`);
+    fetch(`${base}trees${BIN_EXT}`).then((r) => {
+      if (!r.ok) throw new Error(`trees${BIN_EXT} ${r.status}`);
       return r.arrayBuffer();
     }),
   ]);

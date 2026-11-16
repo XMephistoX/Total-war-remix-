@@ -34,6 +34,12 @@ export interface UnitAsset {
   material: THREE.MeshLambertMaterial;
 }
 
+/**
+ * Binary model data is stored as .bin. The published build renames it to .wasm because the
+ * artifact host only serves a fixed list of web file types (see vite.config.ts).
+ */
+export const BIN_EXT = import.meta.env.PROD ? '.wasm' : '.bin';
+
 const cache = new Map<string, Promise<UnitAsset | null>>();
 
 export function loadUnitAsset(key: string, base = './units/'): Promise<UnitAsset | null> {
@@ -50,8 +56,8 @@ async function load(key: string, base: string): Promise<UnitAsset> {
       if (!r.ok) throw new Error(`${key}.json ${r.status}`);
       return r.json() as Promise<UnitAssetMeta>;
     }),
-    fetch(`${base}${key}.bin`).then((r) => {
-      if (!r.ok) throw new Error(`${key}.bin ${r.status}`);
+    fetch(`${base}${key}${BIN_EXT}`).then((r) => {
+      if (!r.ok) throw new Error(`${key}${BIN_EXT} ${r.status}`);
       return r.arrayBuffer();
     }),
     loadImage(`${base}${key}.png`),

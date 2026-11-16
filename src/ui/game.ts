@@ -736,7 +736,7 @@ export class Game {
     $('endCampaign').onclick = () => this.finishCampaignBattle(false);
     $('mWithdraw').onclick = () => {
       $('menu').hidden = true;
-      if (confirm('Withdraw from the battle? Your army retreats and the battle counts as lost.')) this.finishCampaignBattle(true);
+      this.finishCampaignBattle(true);
     };
     $('endNew').onclick = () => {
       $('end').hidden = true;
